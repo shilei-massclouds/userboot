@@ -1,5 +1,5 @@
 [package]
-name = "rt_macrokernel"
+name = "userboot"
 version = "0.1.0"
 edition = "2021"
 
