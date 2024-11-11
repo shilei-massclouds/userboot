@@ -6,43 +6,41 @@
 extern crate axlog2;
 extern crate alloc;
 
-use axerrno::{LinuxError, LinuxResult};
-use axhal::mem::{memory_regions, phys_to_virt};
-use axtype::DtbInfo;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use fork::{user_mode_thread, CloneFlags};
-use core::panic::PanicInfo;
+use alloc::{vec, vec::Vec};
+use alloc::string::String;
 
-pub fn init(cpu_id: usize, dtb: usize) {
+use axerrno::{LinuxError, LinuxResult};
+#[cfg(target_arch = "riscv64")]
+use axhal::mem::phys_to_virt;
+use axtype::DtbInfo;
+use fork::{user_mode_thread, CloneFlags};
+
+pub fn init(cpu_id: usize, dtb_pa: usize) {
+    axconfig::init_once!();
+
     axlog2::init(option_env!("AX_LOG").unwrap_or(""));
     axhal::arch_init_early(cpu_id);
     axalloc::init();
     page_table::init();
     axhal::platform_init();
-    task::init();
-    fileops::init();
+    task::init(cpu_id, dtb_pa);
+    fileops::init(cpu_id, dtb_pa);
 }
 
+/// start_kernel
 pub fn start(_cpu_id: usize, dtb: usize) {
-    start_kernel(dtb).expect("Fatal error!");
-}
-
-fn start_kernel(dtb: usize) -> LinuxResult {
-    let dtb_info = setup_arch(dtb)?;
+    let dtb_info = setup_arch(dtb);
     rest_init(dtb_info);
-    Ok(())
 }
 
-fn setup_arch(dtb: usize) -> LinuxResult<DtbInfo> {
+fn setup_arch(dtb: usize) -> DtbInfo {
     parse_dtb(dtb)
 }
 
-fn parse_dtb(_dtb_pa: usize) -> LinuxResult<DtbInfo> {
+fn parse_dtb(_dtb_pa: usize) -> DtbInfo {
     #[cfg(target_arch = "riscv64")]
     {
         let mut dtb_info = DtbInfo::new();
-        use alloc::string::String;
-        use alloc::vec::Vec;
         let mut cb = |name: String,
                       _addr_cells: usize,
                       _size_cells: usize,
@@ -62,13 +60,12 @@ fn parse_dtb(_dtb_pa: usize) -> LinuxResult<DtbInfo> {
         };
 
         let dtb_va = phys_to_virt(_dtb_pa.into());
-        let dt = axdtb::DeviceTree::init(dtb_va.into()).unwrap();
-        dt.parse(dt.off_struct, 0, 0, &mut cb).unwrap();
-        Ok(dtb_info)
+        axdtb::parse(dtb_va.into(), &mut cb);
+        dtb_info
     }
     #[cfg(not(target_arch = "riscv64"))]
     {
-        Ok(DtbInfo::new())
+        DtbInfo::new()
     }
 }
 
@@ -102,18 +99,19 @@ fn rest_init(dtb_info: DtbInfo) {
 }
 
 fn schedule_preempt_disabled() {
-    let task = task::current();
-    let rq = run_queue::task_rq(&task.sched_info);
-    rq.lock().resched(false);
-    unimplemented!("schedule_preempt_disabled()");
+    task::yield_now();
 }
 
 fn cpu_startup_entry() {
-    unimplemented!("do idle()");
+    loop {
+        task::yield_now();
+    }
 }
 
 /// Prepare for entering first user app.
 fn kernel_init(dtb_info: DtbInfo) {
+    let _ = kernel_init_freeable();
+
     /*
      * We try each of these until one succeeds.
      *
@@ -128,16 +126,13 @@ fn kernel_init(dtb_info: DtbInfo) {
     // Todo: for x86_64, we don't know how to get cmdline
     // from qemu arg '-append="XX"'.
     // Just use environment.
-    let init_cmd = env!("AX_INIT_CMD");
+    let init_cmd = env!("AX_INIT");
     if init_cmd.len() > 0 {
         info!("init_cmd: {}", init_cmd);
         run_init_process(init_cmd).unwrap_or_else(|_| panic!("Requested init {} failed.", init_cmd));
         return;
     }
 
-    // TODO: Replace this testcase with a more appropriate x86_64 testcase
-    //#[cfg(target_arch = "x86_64")]
-    //compile_error!("Remove it after replace a more appropriate x86_64 testcase.");
     try_to_run_init_process("/sbin/init").expect("No working init found.");
 }
 
@@ -154,5 +149,17 @@ fn try_to_run_init_process(init_filename: &str) -> LinuxResult {
 
 fn run_init_process(init_filename: &str) -> LinuxResult {
     info!("run_init_process...");
-    exec::kernel_execve(init_filename)
+
+    let argv_init: Vec<String> = vec![init_filename.into()];
+    let envp_init: Vec<String> = vec![
+        "HOME=/".into(), "TERM=linux".into(),
+    ];
+
+    exec::kernel_execve(init_filename, argv_init, envp_init)?;
+    Ok(())
+}
+
+fn kernel_init_freeable() -> LinuxResult {
+    fileops::console_on_rootfs()?;
+    fileops::loop_init()
 }

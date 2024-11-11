@@ -28,6 +28,7 @@ axtype = { git = "ssh://git@github.com/shilei-massclouds/axtype.git" }
 axdtb = { git = "ssh://git@github.com/shilei-massclouds/axdtb.git" }
 preempt_guard = { git = "ssh://git@github.com/shilei-massclouds/preempt_guard.git" }
 page_table = { git = "ssh://git@github.com/shilei-massclouds/page_table" }
+fileops = { git = "ssh://git@github.com/shilei-massclouds/fileops" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 raw-cpuid = "11.0"
